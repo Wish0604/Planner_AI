@@ -1,0 +1,22 @@
+{
+  "name": "ai-project-planner-backend",
+  "type": "module",
+  "engines": {
+    "node": "20"
+  },
+  "scripts": {
+    "start": "node index.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@google-cloud/secret-manager": "^6.1.1",
+    "@google/generative-ai": "^0.24.1",
+    "@octokit/rest": "^21.0.0",
+    "axios": "^1.6.8",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.3",
+    "express": "^4.18.2",
+    "firebase": "^11.0.1",
+    "uuid": "^9.0.0"
+  }
+}

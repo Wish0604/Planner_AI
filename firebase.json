@@ -1,0 +1,25 @@
+{
+  "hosting": [
+    {
+      "site": "modern-rhythm-483209-c5",
+      "public": "frontend/dist",
+      "rewrites": [
+        {
+          "source": "/api/**",
+          "run": {
+            "serviceId": "ai-backend",
+            "region": "us-central1"
+          }
+        },
+        {
+          "source": "**",
+          "destination": "/index.html"
+        }
+      ]
+    }
+  ],
+  "firestore": {
+    "rules": "backend/firestore.rules",
+    "indexes": "backend/firestore.indexes.json"
+  }
+}
