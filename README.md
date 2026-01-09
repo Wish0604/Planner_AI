@@ -30,7 +30,7 @@ An intelligent, multi-agent project planning platform powered by AI that generat
 ## 📸 Screenshots
 
 ### Main Chat Interface
-![Chat Interface](docs/screenshots/chat.png)
+<img width="1366" height="768" alt="image" src="https://github.com/user-attachments/assets/8625e719-268d-476d-8dc0-24ef6f905d68" />
 
 ### Telemetry Dashboard
 ![Telemetry](docs/screenshots/telemetry.png)
