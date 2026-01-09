@@ -28,15 +28,21 @@ An intelligent, multi-agent project planning platform powered by AI that generat
 **Backend API:** [https://ai-backend-444418153714.us-central1.run.app](https://ai-backend-444418153714.us-central1.run.app)
 
 ## 📸 Screenshots
+### Home Page
+<img width="1366" height="768" alt="image" src="https://github.com/user-attachments/assets/8b60c9a9-9f85-4846-b42a-8c40d95b5d1f" />
 
 ### Main Chat Interface
 <img width="1366" height="768" alt="image" src="https://github.com/user-attachments/assets/8625e719-268d-476d-8dc0-24ef6f905d68" />
 
 ### Telemetry Dashboard
-![Telemetry](docs/screenshots/telemetry.png)
+<img width="1366" height="768" alt="image" src="https://github.com/user-attachments/assets/6158fccd-4017-4c1b-8ac4-0d1b2140125b" />
 
 ### Team Management
-![Teams](docs/screenshots/teams.png)
+<img width="1366" height="768" alt="image" src="https://github.com/user-attachments/assets/80e3a2ac-fe5d-4c17-9651-e690562af374" />
+
+### Audit Trail & Explainability 
+<img width="1366" height="768" alt="image" src="https://github.com/user-attachments/assets/2d72a785-fb7a-4da3-be72-d689a83e810f" />
+
 
 ## 🛠️ Tech Stack
 
