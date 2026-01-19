@@ -19,6 +19,12 @@ export default function TeamManagementDashboard() {
   const [newMemberName, setNewMemberName] = useState("");
   const [newMemberEmail, setNewMemberEmail] = useState("");
   const [newMemberRole, setNewMemberRole] = useState("junior_dev");
+  
+  // Skill editing
+  const [editingMemberId, setEditingMemberId] = useState(null);
+  const [memberSkills, setMemberSkills] = useState({});
+  const [newSkillName, setNewSkillName] = useState("");
+  const [newSkillLevel, setNewSkillLevel] = useState("3");
 
   useEffect(() => {
     // Load from localStorage
@@ -43,6 +49,9 @@ export default function TeamManagementDashboard() {
       if (!res.ok) throw new Error("Failed to load team data");
       const data = await res.json();
       setTeamCapacity(data.capacity);
+      
+      // Save to localStorage for use in project planner
+      localStorage.setItem("currentTeamId", teamId);
     } catch (err) {
       setError(err.message);
       console.error("Error:", err);
@@ -54,6 +63,11 @@ export default function TeamManagementDashboard() {
   const handleCreateTeam = async () => {
     if (!newTeamName) {
       alert("Team name is required");
+      return;
+    }
+
+    if (!organizationId) {
+      alert("Organization ID is required");
       return;
     }
 
@@ -70,19 +84,38 @@ export default function TeamManagementDashboard() {
         }),
       });
 
-      if (!res.ok) throw new Error("Failed to create team");
+      if (!res.ok) {
+        const errorData = await res.json();
+        throw new Error(errorData.error || "Failed to create team");
+      }
+
       const data = await res.json();
-      setTeamId(data.team.id);
+      if (!data.team) {
+        throw new Error("Team was not created - check server logs");
+      }
+
+      const createdTeamId = data.team.id;
+      setTeamId(createdTeamId);
       setNewTeamName("");
       alert("Team created successfully!");
+      // Auto-load team data after creation
+      setTimeout(() => {
+        loadTeamData();
+      }, 500);
     } catch (err) {
       alert("Error: " + err.message);
+      console.error("Create team error:", err);
     }
   };
 
   const handleAddMember = async () => {
     if (!newMemberName || !newMemberEmail) {
       alert("Name and email are required");
+      return;
+    }
+
+    if (!organizationId || !teamId) {
+      alert("Organization ID and Team ID are required. Please create or select a team first.");
       return;
     }
 
@@ -103,7 +136,20 @@ export default function TeamManagementDashboard() {
         }),
       });
 
-      if (!res.ok) throw new Error("Failed to add member");
+      if (!res.ok) {
+        const errorData = await res.json();
+        const errMsg = errorData.error || "Failed to add member";
+        if (errMsg.includes("NOT_FOUND")) {
+          throw new Error("Team does not exist. Please create the team first by clicking 'Load Team' button.");
+        }
+        throw new Error(errMsg);
+      }
+
+      const data = await res.json();
+      if (!data.member) {
+        throw new Error("Member was not created - check server logs");
+      }
+
       setNewMemberName("");
       setNewMemberEmail("");
       setNewMemberRole("junior_dev");
@@ -111,6 +157,36 @@ export default function TeamManagementDashboard() {
       alert("Member added successfully!");
     } catch (err) {
       alert("Error: " + err.message);
+      console.error("Add member error:", err);
+    }
+  };
+
+  const saveSkills = async (memberId, orgId, tId) => {
+    try {
+      const apiUrl = import.meta.env.VITE_API_URL || "http://localhost:8080";
+
+      const res = await fetch(`${apiUrl}/api/org/member-skills`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          organizationId: orgId,
+          teamId: tId,
+          memberId,
+          skills: memberSkills,
+        }),
+      });
+
+      if (!res.ok) {
+        const errorData = await res.json();
+        throw new Error(errorData.error || "Failed to save skills");
+      }
+
+      setEditingMemberId(null);
+      loadTeamData();
+      alert("Skills saved successfully!");
+    } catch (err) {
+      alert("Error: " + err.message);
+      console.error("Save skills error:", err);
     }
   };
 
@@ -491,11 +567,224 @@ export default function TeamManagementDashboard() {
 
             {/* Skills Section */}
             {activeSection === "skills" && (
-              <SkillHeatmap
-                organizationId={organizationId}
-                teamId={teamId}
-                visible={true}
-              />
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "1fr 1fr",
+                  gap: "20px",
+                }}
+              >
+                {/* Skills Editor */}
+                <div
+                  style={{
+                    background: "#262626",
+                    padding: "20px",
+                    borderRadius: "12px",
+                    border: "1px solid #333",
+                  }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "15px" }}>
+                    <h2 style={{ margin: 0, fontSize: "16px", color: "#10a37f" }}>
+                      🎯 Edit Member Skills
+                    </h2>
+                    <button
+                      onClick={() => {
+                        loadTeamData();
+                        setEditingMemberId(null);
+                      }}
+                      style={{
+                        padding: "6px 12px",
+                        background: "#444",
+                        color: "#ddd",
+                        border: "none",
+                        borderRadius: "4px",
+                        cursor: "pointer",
+                        fontSize: "11px",
+                      }}
+                    >
+                      🔄 Refresh
+                    </button>
+                  </div>
+                  
+                  {teamCapacity && teamCapacity.members && teamCapacity.members.length > 0 ? (
+                    <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+                      {teamCapacity.members.map((member) => (
+                        <div
+                          key={member.id}
+                          style={{
+                            background: "#1f1f1f",
+                            padding: "12px",
+                            borderRadius: "6px",
+                            border: editingMemberId === member.id ? "1px solid #10a37f" : "1px solid #333",
+                            cursor: "pointer",
+                          }}
+                          onClick={() => {
+                            if (editingMemberId === member.id) {
+                              setEditingMemberId(null);
+                            } else {
+                              setEditingMemberId(member.id);
+                              setMemberSkills(member.skills || {});
+                              setNewSkillName("");
+                              setNewSkillLevel("3");
+                            }
+                          }}
+                        >
+                          <div style={{ fontWeight: "600", marginBottom: "8px" }}>
+                            {member.name}
+                          </div>
+                          
+                          {editingMemberId === member.id && (
+                            <div style={{ marginTop: "12px" }}>
+                              {Object.entries(memberSkills).length > 0 && (
+                                <div style={{ marginBottom: "12px" }}>
+                                  <div style={{ fontSize: "12px", color: "#999", marginBottom: "8px" }}>
+                                    Current Skills:
+                                  </div>
+                                  {Object.entries(memberSkills).map(([skillName, level]) => (
+                                    <div
+                                      key={skillName}
+                                      style={{
+                                        display: "flex",
+                                        justifyContent: "space-between",
+                                        alignItems: "center",
+                                        padding: "6px 0",
+                                        fontSize: "12px",
+                                        borderBottom: "1px solid #333",
+                                      }}
+                                    >
+                                      <span>{skillName}</span>
+                                      <div style={{ display: "flex", gap: "6px", alignItems: "center" }}>
+                                        <span style={{ color: "#10a37f", fontWeight: "bold" }}>
+                                          {level}/5
+                                        </span>
+                                        <button
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            const updated = { ...memberSkills };
+                                            delete updated[skillName];
+                                            setMemberSkills(updated);
+                                          }}
+                                          style={{
+                                            background: "#ff4757",
+                                            border: "none",
+                                            color: "white",
+                                            padding: "2px 6px",
+                                            borderRadius: "3px",
+                                            cursor: "pointer",
+                                            fontSize: "11px",
+                                          }}
+                                        >
+                                          Remove
+                                        </button>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                              
+                              <div style={{ display: "flex", gap: "8px", marginBottom: "8px" }}>
+                                <input
+                                  type="text"
+                                  placeholder="Skill name (e.g., React)"
+                                  value={newSkillName}
+                                  onChange={(e) => setNewSkillName(e.target.value)}
+                                  onClick={(e) => e.stopPropagation()}
+                                  style={{
+                                    flex: 1,
+                                    padding: "6px 8px",
+                                    background: "#1f1f1f",
+                                    border: "1px solid #444",
+                                    borderRadius: "4px",
+                                    color: "#ddd",
+                                    fontSize: "12px",
+                                  }}
+                                />
+                                <select
+                                  value={newSkillLevel}
+                                  onChange={(e) => setNewSkillLevel(e.target.value)}
+                                  onClick={(e) => e.stopPropagation()}
+                                  style={{
+                                    padding: "6px 8px",
+                                    background: "#1f1f1f",
+                                    border: "1px solid #444",
+                                    borderRadius: "4px",
+                                    color: "#ddd",
+                                    fontSize: "12px",
+                                    minWidth: "50px",
+                                  }}
+                                >
+                                  <option value="1">1 ⭐</option>
+                                  <option value="2">2 ⭐</option>
+                                  <option value="3">3 ⭐</option>
+                                  <option value="4">4 ⭐</option>
+                                  <option value="5">5 ⭐</option>
+                                </select>
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    if (newSkillName) {
+                                      setMemberSkills({
+                                        ...memberSkills,
+                                        [newSkillName]: parseInt(newSkillLevel),
+                                      });
+                                      setNewSkillName("");
+                                      setNewSkillLevel("3");
+                                    }
+                                  }}
+                                  style={{
+                                    padding: "6px 12px",
+                                    background: "#10a37f",
+                                    color: "white",
+                                    border: "none",
+                                    borderRadius: "4px",
+                                    cursor: "pointer",
+                                    fontSize: "12px",
+                                    fontWeight: "600",
+                                  }}
+                                >
+                                  Add
+                                </button>
+                              </div>
+                              
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  saveSkills(member.id, organizationId, teamId);
+                                }}
+                                style={{
+                                  width: "100%",
+                                  padding: "8px 12px",
+                                  background: "#10a37f",
+                                  color: "white",
+                                  border: "none",
+                                  borderRadius: "4px",
+                                  cursor: "pointer",
+                                  fontSize: "12px",
+                                  fontWeight: "600",
+                                }}
+                              >
+                                Save Skills
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div style={{ color: "#999", fontSize: "12px" }}>
+                      No team members. Add members in the Team Members tab first.
+                    </div>
+                  )}
+                </div>
+
+                {/* Heatmap Display */}
+                <SkillHeatmap
+                  organizationId={organizationId}
+                  teamId={teamId}
+                  visible={true}
+                  refreshTrigger={editingMemberId === null}
+                />
+              </div>
             )}
 
             {/* SLA Section */}

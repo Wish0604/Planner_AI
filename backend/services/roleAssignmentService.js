@@ -1,17 +1,5 @@
-import {
-  collection,
-  doc,
-  setDoc,
-  addDoc,
-  getDocs,
-  query,
-  where,
-  orderBy,
-  updateDoc,
-  serverTimestamp,
-} from "firebase/firestore";
-import { initializeApp } from "firebase/app";
-import { getFirestore } from "firebase/firestore";
+import { initializeApp, applicationDefault } from "firebase-admin/app";
+import { getFirestore, FieldValue } from "firebase-admin/firestore";
 import {
   createTeam,
   createTeamMember,
@@ -22,26 +10,20 @@ import {
 
 let db = null;
 
-// Initialize Firebase if available
+// Initialize Firebase Admin SDK (bypasses client security rules)
 try {
   if (process.env.FIREBASE_PROJECT_ID) {
-    const firebaseConfig = {
-      apiKey: process.env.FIREBASE_API_KEY,
-      authDomain: process.env.FIREBASE_AUTH_DOMAIN,
+    initializeApp({
+      credential: applicationDefault(),
       projectId: process.env.FIREBASE_PROJECT_ID,
-      storageBucket: process.env.FIREBASE_STORAGE_BUCKET,
-      messagingSenderId: process.env.FIREBASE_MESSAGING_SENDER_ID,
-      appId: process.env.FIREBASE_APP_ID,
-    };
-
-    const app = initializeApp(firebaseConfig);
-    db = getFirestore(app);
-    console.log("✅ Firebase initialized for organization service");
+    });
+    db = getFirestore();
+    console.log("✅ Firebase Admin initialized for organization service");
   } else {
     console.warn("⚠️  Firebase not configured - org service will be limited");
   }
 } catch (err) {
-  console.warn("⚠️  Could not initialize Firebase for org service:", err.message);
+  console.warn("⚠️  Could not initialize Firebase Admin for org service:", err.message);
 }
 
 /**
@@ -59,11 +41,12 @@ export async function createOrgTeam(organizationId, teamData) {
       ...teamData,
     });
 
-    const teamRef = doc(
-      collection(db, "organizations", organizationId, "teams"),
-      team.id
-    );
-    await setDoc(teamRef, team);
+    const teamRef = db
+      .collection("organizations")
+      .doc(organizationId)
+      .collection("teams")
+      .doc(team.id);
+    await teamRef.set(team);
 
     console.log(`✅ Team created: ${team.name} (${team.id})`);
     return team;
@@ -88,36 +71,40 @@ export async function addTeamMember(organizationId, teamId, memberData) {
       ...memberData,
     });
 
-    // Store member
-    const memberRef = doc(
-      collection(
-        db,
-        "organizations",
+    // Ensure team exists - create if missing
+    const teamRef = db
+      .collection("organizations")
+      .doc(organizationId)
+      .collection("teams")
+      .doc(teamId);
+    const teamDoc = await teamRef.get();
+    if (!teamDoc.exists) {
+      // Create team on first member add
+      await teamRef.set({
+        id: teamId,
         organizationId,
-        "teams",
-        teamId,
-        "members"
-      ),
-      member.id
-    );
-    await setDoc(memberRef, member);
+        name: `Team ${teamId}`,
+        description: "Auto-created team",
+        members: [],
+        owner: memberData.userId,
+        capacity: 0,
+        currentWorkload: 0,
+        createdAt: new Date().toISOString(),
+      });
+      console.log(`✅ Team auto-created: ${teamId}`);
+    }
+
+    // Store member
+    const membersCol = teamRef.collection("members");
+    const memberRef = membersCol.doc(member.id);
+    await memberRef.set(member);
 
     // Update team member list
-    const teamRef = doc(db, "organizations", organizationId, "teams", teamId);
-    const teamSnap = await getDocs(
-      collection(
-        db,
-        "organizations",
-        organizationId,
-        "teams",
-        teamId,
-        "members"
-      )
-    );
+    const teamSnap = await membersCol.get();
     const memberCount = teamSnap.size;
 
-    await updateDoc(teamRef, {
-      members: Array.from(teamSnap.docs).map((d) => d.id),
+    await teamRef.update({
+      members: teamSnap.docs.map((d) => d.id),
       capacity: memberCount * 40, // Assume 40 hours per week default
     });
 
@@ -138,13 +125,13 @@ export async function getOrgTeams(organizationId) {
   }
 
   try {
-    const q = query(
-      collection(db, "organizations", organizationId, "teams"),
-      orderBy("createdAt", "desc")
-    );
-
-    const docs = await getDocs(q);
-    return docs.map((doc) => doc.data());
+    const snapshot = await db
+      .collection("organizations")
+      .doc(organizationId)
+      .collection("teams")
+      .orderBy("createdAt", "desc")
+      .get();
+    return snapshot.docs.map((doc) => doc.data());
   } catch (err) {
     console.error("Error getting teams:", err);
     return [];
@@ -160,20 +147,15 @@ export async function getTeamMembers(organizationId, teamId) {
   }
 
   try {
-    const q = query(
-      collection(
-        db,
-        "organizations",
-        organizationId,
-        "teams",
-        teamId,
-        "members"
-      ),
-      where("availability", "==", true)
-    );
-
-    const docs = await getDocs(q);
-    return docs.map((doc) => doc.data());
+    const snapshot = await db
+      .collection("organizations")
+      .doc(organizationId)
+      .collection("teams")
+      .doc(teamId)
+      .collection("members")
+      .where("availability", "==", true)
+      .get();
+    return snapshot.docs.map((doc) => doc.data());
   } catch (err) {
     console.error("Error getting team members:", err);
     return [];
@@ -208,20 +190,16 @@ export async function assignTaskToTeam(
     }
 
     // Update member workload
-    const memberRef = doc(
-      collection(
-        db,
-        "organizations",
-        organizationId,
-        "teams",
-        teamId,
-        "members"
-      ),
-      member.id
-    );
+    const memberRef = db
+      .collection("organizations")
+      .doc(organizationId)
+      .collection("teams")
+      .doc(teamId)
+      .collection("members")
+      .doc(member.id);
 
     const newWorkload = (member.currentWorkload || 0) + (taskData.effort || 0);
-    await updateDoc(memberRef, {
+    await memberRef.update({
       currentWorkload: newWorkload,
     });
 
@@ -334,20 +312,16 @@ export async function updateMemberWorkload(
   }
 
   try {
-    const memberRef = doc(
-      collection(
-        db,
-        "organizations",
-        organizationId,
-        "teams",
-        teamId,
-        "members"
-      ),
-      memberId
-    );
+    const memberRef = db
+      .collection("organizations")
+      .doc(organizationId)
+      .collection("teams")
+      .doc(teamId)
+      .collection("members")
+      .doc(memberId);
 
-    const snapshot = await getDocs(query(memberRef));
-    const member = snapshot.docs[0]?.data();
+    const docSnap = await memberRef.get();
+    const member = docSnap.data();
 
     if (!member) throw new Error("Member not found");
 
@@ -356,9 +330,9 @@ export async function updateMemberWorkload(
       (member.currentWorkload || 0) - hoursToRelease
     );
 
-    await updateDoc(memberRef, {
+    await memberRef.update({
       currentWorkload: newWorkload,
-      lastUpdated: serverTimestamp(),
+      lastUpdated: FieldValue.serverTimestamp(),
     });
 
     console.log(`✅ Workload updated: ${newWorkload}h`);
@@ -421,5 +395,31 @@ export async function getOrgCapacityStatus(organizationId) {
       memberCount: 0,
       teams: [],
     };
+  }
+}
+
+/**
+ * Update member skills
+ */
+export async function updateMemberSkills(organizationId, teamId, memberId, skills) {
+  if (!db) {
+    throw new Error("Firebase not initialized");
+  }
+
+  try {
+    const memberRef = db
+      .collection("organizations")
+      .doc(organizationId)
+      .collection("teams")
+      .doc(teamId)
+      .collection("members")
+      .doc(memberId);
+
+    await memberRef.update({ skills });
+
+    return { success: true, message: "Skills updated successfully" };
+  } catch (err) {
+    console.error("Error updating member skills:", err);
+    throw err;
   }
 }

@@ -3,7 +3,6 @@ import { useNavigate } from "react-router-dom";
 import { AuthContext } from "../context/AuthContext.jsx";
 import { saveAnalysis } from "../services/firestoreService.jsx";
 import { subscribeToProjects, saveProject, updateProject, deleteProject } from "../services/projectService.jsx";
-import { fetchRepoHealth } from "../services/githubService.jsx";
 import {
   RoadmapRenderer,
   TechStackRenderer,
@@ -38,9 +37,6 @@ export default function ChatStyleProjectPlanner() {
   const [newProjectTitle, setNewProjectTitle] = useState("");
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [projectToDelete, setProjectToDelete] = useState(null);
-  const [repoHealth, setRepoHealth] = useState(null);
-  const [healthLoading, setHealthLoading] = useState(false);
-  const [healthError, setHealthError] = useState("");
   const [showFeedbackModal, setShowFeedbackModal] = useState(false);
 
   // Handle mobile responsiveness
@@ -154,6 +150,41 @@ export default function ChatStyleProjectPlanner() {
     scrollToBottom();
   }, [messages]);
 
+  const fetchTeamContext = async () => {
+    if (!user?.uid) return null;
+    
+    try {
+      const apiUrl = import.meta.env.VITE_API_URL || "http://localhost:8080";
+      
+      // Fetch team data from your organization
+      const orgId = localStorage.getItem('currentOrganizationId');
+      const teamId = localStorage.getItem('currentTeamId');
+      
+      if (!orgId || !teamId) return null;
+      
+      const response = await fetch(`${apiUrl}/api/org/team-capacity?organizationId=${orgId}&teamId=${teamId}`);
+      if (!response.ok) return null;
+      
+      const data = await response.json();
+      if (!data.capacity) return null;
+      
+      return {
+        teamMembers: data.capacity.members || [],
+        totalCapacity: data.capacity.capacity || 0,
+        memberCount: data.capacity.memberCount || 0,
+        utilization: data.capacity.utilization || 0,
+        skills: data.capacity.members?.flatMap(m => 
+          Object.keys(m.skills || {}).map(skill => ({ skill, member: m.name }))
+        ) || [],
+        organizationId: orgId,
+        teamId: teamId
+      };
+    } catch (error) {
+      console.error('Failed to fetch team context:', error);
+      return null;
+    }
+  };
+
   const generate = async () => {
     if (!idea.trim()) {
       alert("Please enter a query or idea");
@@ -170,6 +201,9 @@ export default function ChatStyleProjectPlanner() {
     let targetProjectId = activeProjectId;
 
     const userIdea = idea;
+
+    // Fetch team context (skills, capacity, SLA)
+    const teamContext = await fetchTeamContext();
 
     // Add user message
     const userMessage = {
@@ -194,11 +228,13 @@ export default function ChatStyleProjectPlanner() {
       setMessagesForActive((prev) => [...prev, loadingMessage]);
 
       const apiUrl = import.meta.env.VITE_API_URL || "http://localhost:8080";
-      const res = await fetch(`${apiUrl}/generate-roadmap`, {
+      const res = await fetch(`${apiUrl}/api/multi-agent-roadmap`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ 
-          input: userIdea
+          input: userIdea,
+          userId: user?.uid || 'anonymous',
+          teamContext: teamContext
         })
       });
 
@@ -269,6 +305,12 @@ export default function ChatStyleProjectPlanner() {
     const msgText = (text ?? idea).trim();
     if (!msgText) return;
 
+    // Validate we have a current project
+    if (!currentProject) {
+      setError("Please select a project first");
+      return;
+    }
+
     // Add user message
     const userMessage = { id: Date.now(), type: "user", content: msgText };
     setMessagesForActive((prev) => [...prev, userMessage]);
@@ -280,7 +322,10 @@ export default function ChatStyleProjectPlanner() {
       const loadingMessage = { id: Date.now() + 1, type: "assistant", content: "thinking", isLoading: true };
       setMessagesForActive((prev) => [...prev, loadingMessage]);
 
-      const res = await fetch("/api/project-chat", {
+      const apiUrl = import.meta.env.VITE_API_URL || "http://localhost:8080";
+      console.log("Sending chat to:", `${apiUrl}/api/project-chat`);
+      
+      const res = await fetch(`${apiUrl}/api/project-chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -289,12 +334,22 @@ export default function ChatStyleProjectPlanner() {
           projectReport: currentProject?.report
         })
       });
-      if (!res.ok) throw new Error(`API error: ${res.status}`);
+      
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+        throw new Error(errorData.error || `API error: ${res.status}`);
+      }
+      
       const data = await res.json();
+      
+      if (!data.reply) {
+        throw new Error("No reply received from API");
+      }
 
       const assistantMessage = { id: Date.now() + 2, type: "assistant", content: data.reply, mode: "chat", isLoading: false };
       setMessagesForActive((prev) => prev.filter((m) => !m.isLoading).concat(assistantMessage));
     } catch (err) {
+      console.error("Chat error:", err);
       setError(err.message);
       setMessagesForActive((prev) => prev.filter((m) => !m.isLoading));
     } finally {
@@ -317,11 +372,18 @@ export default function ChatStyleProjectPlanner() {
       const loadingMessage = { id: Date.now() + 1, type: "assistant", content: "analyzing", isLoading: true, usedModel: null };
       setMessagesForProject(targetProjectId, (prev) => [...prev, loadingMessage]);
 
+      // Fetch team context
+      const teamContext = await fetchTeamContext();
+
       const apiUrl = import.meta.env.VITE_API_URL || "http://localhost:8080";
-      const res = await fetch(`${apiUrl}/generate-roadmap`, {
+      const res = await fetch(`${apiUrl}/api/multi-agent-roadmap`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ input: seedText })
+        body: JSON.stringify({ 
+          input: seedText,
+          userId: user?.uid || 'anonymous',
+          teamContext: teamContext
+        })
       });
       if (!res.ok) {
         const errorData = await res.json().catch(() => ({}));
@@ -371,18 +433,7 @@ export default function ChatStyleProjectPlanner() {
     setProjectMenuOpenId(null);
   };
 
-  const loadRepoHealth = async () => {
-    setHealthLoading(true);
-    setHealthError("");
-    try {
-      const data = await fetchRepoHealth();
-      setRepoHealth(data.health);
-    } catch (err) {
-      setHealthError(err.message);
-    } finally {
-      setHealthLoading(false);
-    }
-  };
+
 
   const addNewProject = () => {
     if (!user?.uid) return;
@@ -1010,87 +1061,7 @@ export default function ChatStyleProjectPlanner() {
             width: "100%"
           }}
         >
-          {/* Repo Health Banner */}
-          <div
-            style={{
-              backgroundColor: "#151515",
-              border: "1px solid #262626",
-              borderRadius: "12px",
-              padding: isMobile ? "12px" : "14px",
-              display: "flex",
-              flexDirection: "column",
-              gap: "8px"
-            }}
-          >
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <div style={{ fontWeight: 600 }}>Repo Health</div>
-              <button
-                onClick={loadRepoHealth}
-                disabled={healthLoading}
-                style={{
-                  backgroundColor: "#10a37f",
-                  color: "white",
-                  border: "none",
-                  borderRadius: "8px",
-                  padding: "8px 10px",
-                  cursor: healthLoading ? "not-allowed" : "pointer",
-                  fontWeight: 600,
-                  fontSize: "12px"
-                }}
-              >
-                {healthLoading ? "Refreshing..." : "Refresh"}
-              </button>
-            </div>
-            {healthError && (
-              <div style={{ color: "#f87171", fontSize: "13px" }}>⚠️ {healthError}</div>
-            )}
-            {repoHealth ? (
-              <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(3, 1fr)", gap: "10px", fontSize: "13px", color: "#e5e7eb" }}>
-                <div style={{ backgroundColor: "#1c1c1c", borderRadius: "8px", padding: "10px" }}>
-                  <div style={{ fontWeight: 600, marginBottom: "4px" }}>Blockers</div>
-                  {repoHealth.blockers?.length ? (
-                    <ul style={{ margin: 0, paddingLeft: "16px" }}>
-                      {repoHealth.blockers.map((b, idx) => (
-                        <li key={idx}>{b}</li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <div style={{ color: "#9aa0a6" }}>None detected</div>
-                  )}
-                </div>
-                <div style={{ backgroundColor: "#1c1c1c", borderRadius: "8px", padding: "10px" }}>
-                  <div style={{ fontWeight: 600, marginBottom: "4px" }}>Failing Workflows</div>
-                  {repoHealth.failingWorkflows?.length ? (
-                    <ul style={{ margin: 0, paddingLeft: "16px" }}>
-                      {repoHealth.failingWorkflows.map((wf) => (
-                        <li key={wf.id}>
-                          {wf.name} ({wf.headBranch})
-                        </li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <div style={{ color: "#9aa0a6" }}>All green</div>
-                  )}
-                </div>
-                <div style={{ backgroundColor: "#1c1c1c", borderRadius: "8px", padding: "10px" }}>
-                  <div style={{ fontWeight: 600, marginBottom: "4px" }}>Stale PRs</div>
-                  {repoHealth.stalePullRequests?.length ? (
-                    <ul style={{ margin: 0, paddingLeft: "16px" }}>
-                      {repoHealth.stalePullRequests.map((pr) => (
-                        <li key={pr.number}>
-                          #{pr.number} {pr.title}
-                        </li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <div style={{ color: "#9aa0a6" }}>None</div>
-                  )}
-                </div>
-              </div>
-            ) : (
-              <div style={{ color: "#9aa0a6", fontSize: "13px" }}>Press Refresh to fetch repo health.</div>
-            )}
-          </div>
+
 
           {messages.length === 0 && !loading && (
             <div
@@ -1219,6 +1190,42 @@ export default function ChatStyleProjectPlanner() {
                   📊 Telemetry
                 </button>
               </div>
+            </div>
+          )}
+
+          {/* Error Display */}
+          {error && (
+            <div
+              style={{
+                backgroundColor: "#7f1d1d",
+                borderLeft: "4px solid #dc2626",
+                color: "#fca5a5",
+                padding: "12px 14px",
+                borderRadius: "6px",
+                marginBottom: "12px",
+                fontSize: isMobile ? "12px" : "13px",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                gap: "12px"
+              }}
+            >
+              <span>❌ {error}</span>
+              <button
+                onClick={() => setError("")}
+                style={{
+                  background: "none",
+                  border: "none",
+                  color: "#fca5a5",
+                  cursor: "pointer",
+                  fontSize: "16px",
+                  padding: "0",
+                  display: "flex",
+                  alignItems: "center"
+                }}
+              >
+                ×
+              </button>
             </div>
           )}
 

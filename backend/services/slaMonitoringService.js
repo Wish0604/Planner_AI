@@ -1,17 +1,5 @@
-import {
-  collection,
-  doc,
-  setDoc,
-  addDoc,
-  getDocs,
-  query,
-  where,
-  orderBy,
-  updateDoc,
-  serverTimestamp,
-} from "firebase/firestore";
-import { initializeApp } from "firebase/app";
-import { getFirestore } from "firebase/firestore";
+import { initializeApp, applicationDefault, getApps } from "firebase-admin/app";
+import { getFirestore, FieldValue } from "firebase-admin/firestore";
 import {
   createSLAContract,
   isDeadlineBreach,
@@ -22,27 +10,26 @@ import {
 
 let db = null;
 
-// Initialize Firebase if available
+// Initialize Firebase Admin SDK (or use existing instance)
 try {
   if (process.env.FIREBASE_PROJECT_ID) {
-    const firebaseConfig = {
-      apiKey: process.env.FIREBASE_API_KEY,
-      authDomain: process.env.FIREBASE_AUTH_DOMAIN,
-      projectId: process.env.FIREBASE_PROJECT_ID,
-      storageBucket: process.env.FIREBASE_STORAGE_BUCKET,
-      messagingSenderId: process.env.FIREBASE_MESSAGING_SENDER_ID,
-      appId: process.env.FIREBASE_APP_ID,
-    };
-
-    const app = initializeApp(firebaseConfig);
-    db = getFirestore(app);
-    console.log("✅ Firebase initialized for SLA monitoring service");
+    // Check if Firebase Admin is already initialized
+    if (getApps().length === 0) {
+      initializeApp({
+        credential: applicationDefault(),
+        projectId: process.env.FIREBASE_PROJECT_ID,
+      });
+      console.log("✅ Firebase Admin initialized for SLA monitoring service");
+    } else {
+      console.log("✅ Firebase Admin already initialized, reusing for SLA service");
+    }
+    db = getFirestore();
   } else {
     console.warn("⚠️  Firebase not configured - SLA monitoring will be limited");
   }
 } catch (err) {
   console.warn(
-    "⚠️  Could not initialize Firebase for SLA service:",
+    "⚠️  Could not initialize Firebase Admin for SLA service:",
     err.message
   );
 }
@@ -63,11 +50,12 @@ export async function createSLAForMilestone(organizationId, projectId, slaData) 
       ...slaData,
     });
 
-    const slaRef = doc(
-      collection(db, "organizations", organizationId, "slas"),
-      sla.id
-    );
-    await setDoc(slaRef, sla);
+    const slaRef = db
+      .collection("organizations")
+      .doc(organizationId)
+      .collection("slas")
+      .doc(sla.id);
+    await slaRef.set(sla);
 
     console.log(`✅ SLA created: ${sla.milestoneName} due ${sla.deadline}`);
     return sla;
@@ -91,13 +79,13 @@ export async function checkSLAHealth(organizationId) {
   }
 
   try {
-    const q = query(
-      collection(db, "organizations", organizationId, "slas"),
-      where("status", "==", "active")
-    );
-
-    const docs = await getDocs(q);
-    const slas = docs.map((doc) => doc.data());
+    const slasCol = db
+      .collection("organizations")
+      .doc(organizationId)
+      .collection("slas");
+    
+    const snapshot = await slasCol.where("status", "==", "active").get();
+    const slas = snapshot.docs.map((doc) => doc.data());
 
     const healthy = [];
     const atRisk = [];
@@ -183,17 +171,19 @@ export async function logSLABreach(organizationId, sla) {
       acknowledged: false,
     };
 
-    await addDoc(
-      collection(db, "organizations", organizationId, "slaBreaches"),
-      breach
-    );
+    await db
+      .collection("organizations")
+      .doc(organizationId)
+      .collection("slaBreaches")
+      .add(breach);
 
     // Update SLA status
-    const slaRef = doc(
-      collection(db, "organizations", organizationId, "slas"),
-      sla.id
-    );
-    await updateDoc(slaRef, {
+    const slaRef = db
+      .collection("organizations")
+      .doc(organizationId)
+      .collection("slas")
+      .doc(sla.id);
+    await slaRef.update({
       status: "breached",
       breachAlertSent: true,
     });
@@ -224,14 +214,17 @@ export async function getSLABreachAnalytics(organizationId, days = 30) {
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - days);
 
-    const q = query(
-      collection(db, "organizations", organizationId, "slaBreaches"),
-      where("detectedAt", ">=", cutoffDate.toISOString()),
-      orderBy("detectedAt", "desc")
-    );
-
-    const docs = await getDocs(q);
-    const breaches = docs.map((doc) => doc.data());
+    const breachesCol = db
+      .collection("organizations")
+      .doc(organizationId)
+      .collection("slaBreaches");
+    
+    const snapshot = await breachesCol
+      .where("detectedAt", ">=", cutoffDate.toISOString())
+      .orderBy("detectedAt", "desc")
+      .get();
+    
+    const breaches = snapshot.docs.map((doc) => doc.data());
 
     const breachesByPriority = {};
     let totalDaysOverdue = 0;
@@ -243,9 +236,11 @@ export async function getSLABreachAnalytics(organizationId, days = 30) {
     }
 
     // Calculate breach rate
-    const totalSLAs = await getDocs(
-      collection(db, "organizations", organizationId, "slas")
-    );
+    const totalSLAs = await db
+      .collection("organizations")
+      .doc(organizationId)
+      .collection("slas")
+      .get();
     const breachRate =
       totalSLAs.size > 0 ? ((breaches.length / totalSLAs.size) * 100).toFixed(1) : 0;
 
@@ -281,14 +276,15 @@ export async function acknowledgeSLABreach(organizationId, breachId) {
   }
 
   try {
-    const breachRef = doc(
-      collection(db, "organizations", organizationId, "slaBreaches"),
-      breachId
-    );
+    const breachRef = db
+      .collection("organizations")
+      .doc(organizationId)
+      .collection("slaBreaches")
+      .doc(breachId);
 
-    await updateDoc(breachRef, {
+    await breachRef.update({
       acknowledged: true,
-      acknowledgedAt: serverTimestamp(),
+      acknowledgedAt: FieldValue.serverTimestamp(),
     });
 
     console.log(`✅ SLA breach acknowledged: ${breachId}`);
@@ -309,15 +305,16 @@ export async function completeSLA(organizationId, slaId, actualCompletionDate) {
   }
 
   try {
-    const slaRef = doc(
-      collection(db, "organizations", organizationId, "slas"),
-      slaId
-    );
+    const slaRef = db
+      .collection("organizations")
+      .doc(organizationId)
+      .collection("slas")
+      .doc(slaId);
 
     const wasOnTime =
       new Date(actualCompletionDate) <= new Date(slaId.deadline);
 
-    await updateDoc(slaRef, {
+    await slaRef.update({
       status: "completed",
       actualCompletionDate,
       wasOnTime,
@@ -346,13 +343,13 @@ export async function getProjectSLASummary(organizationId, projectId) {
   }
 
   try {
-    const q = query(
-      collection(db, "organizations", organizationId, "slas"),
-      where("projectId", "==", projectId)
-    );
-
-    const docs = await getDocs(q);
-    const slas = docs.map((doc) => ({
+    const slasCol = db
+      .collection("organizations")
+      .doc(organizationId)
+      .collection("slas");
+    
+    const snapshot = await slasCol.where("projectId", "==", projectId).get();
+    const slas = snapshot.docs.map((doc) => ({
       ...doc.data(),
       riskLevel: getSLARiskLevel(doc.data()),
       daysRemaining: Math.ceil(

@@ -3,12 +3,11 @@ import express from "express";
 import cors from "cors";
 import { createOrchestrator } from "./services/orchestrator.js";
 import { getGemini } from "./config/gemini.js";
-import { githubService, assertGitHubConfig } from "./services/githubService.js";
 import { telemetryTracker } from "./services/telemetryTracker.js";
 import { routeModel } from "./services/modelRouter.js";
 import { submitFeedback, getFeedbackAnalytics, getPromptVersionHistory, getAffinityScores } from "./services/feedbackService.js";
 import { logDecision, logTaskReassignment, logAgentAction, logConfidenceScore, getExplanations, getAuditTrail, getConfidenceScores, getXAIAnalytics } from "./services/explanationService.js";
-import { createOrgTeam, addTeamMember, assignTaskToTeam, getTeamCapacityStatus, getTeamSkillHeatmap, getOrgCapacityStatus } from "./services/roleAssignmentService.js";
+import { createOrgTeam, addTeamMember, assignTaskToTeam, getTeamCapacityStatus, getTeamSkillHeatmap, getOrgCapacityStatus, updateMemberSkills } from "./services/roleAssignmentService.js";
 import { createSLAForMilestone, checkSLAHealth, getSLABreachAnalytics, getProjectSLASummary } from "./services/slaMonitoringService.js";
 
 const app = express();
@@ -16,11 +15,9 @@ app.use(cors());
 app.use(express.json());
 
 console.log("GEMINI_API_KEY loaded:", process.env.GEMINI_API_KEY ? "YES" : "NO");
-const ghCheck = assertGitHubConfig();
-console.log("GitHub integration:", ghCheck.ok ? "configured" : "missing envs");
 
 // Initialize multi-agent orchestrator
-const orchestrator = createOrchestrator({ issueReporter: githubService });
+const orchestrator = createOrchestrator({ issueReporter: null });
 
 app.get("/", (req, res) => {
   res.send("AI Project Planner Backend is running 🚀");
@@ -44,7 +41,7 @@ app.post("/generate-roadmap", async (req, res) => {
 // Multi-agent architecture endpoint
 app.post("/api/multi-agent-roadmap", async (req, res) => {
   try {
-    const { input, userId } = req.body;
+    const { input, userId, teamContext } = req.body;
     
     console.log(`🤖 Multi-agent processing for user: ${userId}`);
     
@@ -52,12 +49,31 @@ app.post("/api/multi-agent-roadmap", async (req, res) => {
       throw new Error("GEMINI_API_KEY environment variable not set on server");
     }
     
-    // Execute multi-agent orchestration
-    const report = await orchestrator.execute(input);
+    // Build enhanced context with team data
+    let enhancedInput = input;
+    
+    if (teamContext && teamContext.teamMembers && teamContext.teamMembers.length > 0) {
+      enhancedInput += `\n\n## Team Context:\n`;
+      enhancedInput += `- Team Size: ${teamContext.memberCount} member(s)\n`;
+      enhancedInput += `- Total Capacity: ${teamContext.totalCapacity} hours/week\n`;
+      enhancedInput += `- Current Utilization: ${teamContext.utilization}%\n`;
+      
+      if (teamContext.skills && teamContext.skills.length > 0) {
+        const skillSummary = teamContext.skills.map(s => s.skill).filter((v, i, a) => a.indexOf(v) === i);
+        enhancedInput += `- Available Skills: ${skillSummary.join(', ')}\n`;
+      }
+      
+      enhancedInput += `\n**Please consider the team's capacity, available skills, and current workload when creating the roadmap. Suggest realistic timelines based on the team size and ensure required skills match available expertise.**`;
+    }
+    
+    // Execute multi-agent orchestration with enhanced input
+    const report = await orchestrator.execute(enhancedInput);
     
     res.json({
       success: true,
       report,
+      usedModel: 'gemini',
+      result: report,
       architecture: {
         agents: [
           'Planner',
@@ -66,7 +82,8 @@ app.post("/api/multi-agent-roadmap", async (req, res) => {
           'Risk Specialist',
           'Deliverables Specialist'
         ],
-        flow: 'User → Planner → Executors (parallel)'
+        flow: 'User → Planner → Executors (parallel)',
+        teamContextApplied: !!teamContext
       }
     });
   } catch (err) {
@@ -78,73 +95,7 @@ app.post("/api/multi-agent-roadmap", async (req, res) => {
   }
 });
 
-// GitHub issue creation endpoint
-app.post("/api/github/issues", async (req, res) => {
-  try {
-    const { title, body, labels } = req.body || {};
-    if (!title || !body) {
-      return res.status(400).json({ error: "'title' and 'body' are required" });
-    }
 
-    const issue = await githubService.createIssue({ title, body, labels });
-    res.json({ success: true, issue });
-  } catch (err) {
-    console.error("CREATE_ISSUE_ERROR:", err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Repo health snapshot
-app.get("/api/repo-health", async (req, res) => {
-  try {
-    const staleDays = Number(req.query.staleDays) || 7;
-    const failingRunThreshold = Number(req.query.failingRunThreshold) || 2;
-    const health = await githubService.getRepoHealth({ staleDays, failingRunThreshold });
-    res.json({ success: true, health });
-  } catch (err) {
-    console.error("REPO_HEALTH_ERROR:", err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Scheduler hook (Cloud Scheduler every 5 minutes)
-app.post("/monitor", async (req, res) => {
-  try {
-    const secret = process.env.REPO_HEALTH_SECRET;
-    if (secret && req.header("x-cron-secret") !== secret) {
-      return res.status(401).json({ error: "Unauthorized" });
-    }
-
-    const health = await githubService.getRepoHealth();
-
-    if (health.configured && health.blockers?.length) {
-      const summary = health.blockers.join("; ");
-      const body = [
-        "## Repo Health Blockers",
-        summary,
-        "",
-        "## Failing Workflows",
-        ...(health.failingWorkflows || []).map((wf) => `- ${wf.name} (${wf.headBranch}) attempt ${wf.attempt} – ${wf.url}`),
-        "",
-        "## Stale PRs",
-        ...(health.stalePullRequests || []).map((pr) => `- #${pr.number} ${pr.title} – ${pr.url}`),
-        "",
-        `Generated: ${health.generatedAt}`
-      ].join("\n");
-
-      await githubService.createIssue({
-        title: `[Health] Blockers detected at ${new Date().toISOString()}`,
-        body,
-        labels: ["repo-health", "auto-filed"]
-      });
-    }
-
-    res.json({ success: true, health });
-  } catch (err) {
-    console.error("HEALTH_CRON_ERROR:", err);
-    res.status(500).json({ error: err.message });
-  }
-});
 
 // Project chat endpoint (single-assistant chat over project context)
 app.post("/api/project-chat", async (req, res) => {
@@ -445,6 +396,10 @@ app.post("/api/org/teams", async (req, res) => {
       members: [],
     });
 
+    if (!team) {
+      return res.status(500).json({ error: "Firebase not initialized - unable to create team" });
+    }
+
     res.json({ success: true, team });
   } catch (err) {
     console.error("CREATE_TEAM_ERROR:", err);
@@ -469,6 +424,10 @@ app.post("/api/org/team-members", async (req, res) => {
       skills: skills || {},
       capacity: capacity || 40,
     });
+
+    if (!member) {
+      return res.status(500).json({ error: "Firebase not initialized - unable to add member" });
+    }
 
     res.json({ success: true, member });
   } catch (err) {
@@ -530,6 +489,24 @@ app.get("/api/org/skill-heatmap", async (req, res) => {
     res.json({ success: true, heatmap });
   } catch (err) {
     console.error("GET_HEATMAP_ERROR:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Update member skills
+app.put("/api/org/member-skills", async (req, res) => {
+  try {
+    const { organizationId, teamId, memberId, skills } = req.body;
+
+    if (!organizationId || !teamId || !memberId || !skills) {
+      return res.status(400).json({ error: "Missing required fields: organizationId, teamId, memberId, skills" });
+    }
+
+    await updateMemberSkills(organizationId, teamId, memberId, skills);
+
+    res.json({ success: true, message: "Skills updated successfully" });
+  } catch (err) {
+    console.error("UPDATE_SKILLS_ERROR:", err);
     res.status(500).json({ error: err.message });
   }
 });

@@ -276,49 +276,9 @@ export function TimelineRenderer({ data }) {
 }
 
 export function RisksRenderer({ data }) {
-  const [creatingIssue, setCreatingIssue] = useState(null);
-  const [issueSuccess, setIssueSuccess] = useState(null);
-  const [issueError, setIssueError] = useState(null);
-
   if (!data || data.parseError) {
     return <pre style={{ whiteSpace: 'pre-wrap', lineHeight: '1.6', color: '#e5e5e5' }}>{data?.raw || 'No data'}</pre>;
   }
-
-  const createIssueForRisk = async (risk) => {
-    setCreatingIssue(risk.id);
-    setIssueError(null);
-    setIssueSuccess(null);
-    try {
-      const title = `[Risk] ${risk.name}`;
-      const body = [
-        `## Summary`,
-        `**Severity:** ${risk.severity}`,
-        `**Probability:** ${risk.probability}`,
-        `**Impact:** ${risk.impact}`,
-        ``,
-        `## Mitigation Strategy`,
-        ...(risk.mitigation || []).map(m => `- ${m}`),
-        ``,
-        `## Contingency Plan`,
-        risk.contingency || 'N/A'
-      ].join('\n');
-
-      const res = await fetch('/api/github/issues', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title, body, labels: ['risk', 'auto-filed'] })
-      });
-      if (!res.ok) throw new Error(`Failed to create issue: ${res.status}`);
-      await res.json();
-      setIssueSuccess(risk.id);
-      setTimeout(() => setIssueSuccess(null), 3000);
-    } catch (err) {
-      setIssueError(err.message);
-      setTimeout(() => setIssueError(null), 5000);
-    } finally {
-      setCreatingIssue(null);
-    }
-  };
 
   const renderRiskSection = (title, risks) => (
     <section style={{ marginBottom: '32px' }}>
@@ -369,23 +329,6 @@ export function RisksRenderer({ data }) {
               {risk.mitigation?.map((m, i) => <li key={i} style={{ marginBottom: '4px', lineHeight: '1.5' }}>{renderTextWithLinks(m)}</li>)}
             </ul>
             <p style={{ marginBottom: '12px', color: '#ccc', lineHeight: '1.6' }}><strong style={{ color: '#fff' }}>Contingency:</strong> {renderTextWithLinks(risk.contingency)}</p>
-            <button
-              onClick={() => createIssueForRisk(risk)}
-              disabled={creatingIssue === risk.id}
-              style={{
-                backgroundColor: issueSuccess === risk.id ? '#4caf50' : '#10a37f',
-                color: 'white',
-                border: 'none',
-                borderRadius: '6px',
-                padding: '8px 14px',
-                cursor: creatingIssue === risk.id ? 'not-allowed' : 'pointer',
-                fontSize: '13px',
-                fontWeight: 600,
-                opacity: creatingIssue === risk.id ? 0.6 : 1
-              }}
-            >
-              {creatingIssue === risk.id ? '⏳ Creating...' : issueSuccess === risk.id ? '✓ Created!' : '🐙 Create GitHub Issue'}
-            </button>
           </div>
         );
       })}
@@ -394,18 +337,6 @@ export function RisksRenderer({ data }) {
 
   return (
     <div style={{ color: '#e5e5e5' }}>
-      {issueError && (
-        <div style={{
-          backgroundColor: '#dc2626',
-          color: '#fee2e2',
-          padding: '12px 16px',
-          borderRadius: '8px',
-          marginBottom: '16px',
-          fontSize: '14px'
-        }}>
-          ⚠️ {issueError}
-        </div>
-      )}
       <div style={{ 
         backgroundColor: data.overallRiskLevel === 'High' ? '#2a1a1a' : 
                        data.overallRiskLevel === 'Medium' ? '#2a2416' : '#1a2a1b',

@@ -16,7 +16,7 @@ const PROFICIENCY_LABELS = {
   1: "Learning",
 };
 
-export default function SkillHeatmap({ organizationId, teamId, visible = true }) {
+export default function SkillHeatmap({ organizationId, teamId, visible = true, refreshTrigger = null }) {
   const [heatmapData, setHeatmapData] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -27,7 +27,7 @@ export default function SkillHeatmap({ organizationId, teamId, visible = true })
     if (visible && organizationId && teamId) {
       loadSkillHeatmap();
     }
-  }, [organizationId, teamId, visible]);
+  }, [organizationId, teamId, visible, refreshTrigger]);
 
   const loadSkillHeatmap = async () => {
     try {
